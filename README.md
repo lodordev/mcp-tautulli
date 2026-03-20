@@ -4,6 +4,8 @@ A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](http
 
 11 read-only tools. No mutations. All configuration via environment variables.
 
+[![mcp-tautulli MCP server](https://glama.ai/mcp/servers/lodordev/mcp-tautulli/badges/card.svg)](https://glama.ai/mcp/servers/lodordev/mcp-tautulli)
+
 ## Prerequisites
 
 - Python 3.10+
