@@ -1,0 +1,2 @@
+fastmcp>=2.14
+httpx>=0.28
