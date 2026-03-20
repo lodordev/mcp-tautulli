@@ -13,15 +13,15 @@ A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](http
 ## Installation
 
 ```bash
-pip install fastmcp httpx
+pip install mcp-tautulli
 ```
 
-Or from the repo:
+Or from source:
 
 ```bash
 git clone https://github.com/lodordev/mcp-tautulli.git
 cd mcp-tautulli
-pip install -r requirements.txt
+pip install .
 ```
 
 ## Configuration
