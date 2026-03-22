@@ -4,17 +4,21 @@ Single-file FastMCP server providing read-only access to Tautulli's API.
 Designed for Claude Code integration via stdio transport.
 
 Tools:
-  tautulli_activity        — Who's watching right now
-  tautulli_history         — Recent playback history
-  tautulli_user_stats      — Per-user watch statistics
-  tautulli_library_stats   — Library-level statistics
-  tautulli_most_watched    — Top content by plays (configurable time range)
-  tautulli_server_info     — Plex server identity and status
-  tautulli_status          — Server configuration and reachability
-  tautulli_transcode_stats — Direct play vs transcode breakdown by platform
-  tautulli_platform_stats  — Top platforms/devices by plays and watch time
-  tautulli_stream_resolution — Source vs delivered resolution analysis
-  tautulli_plays_by_date   — Daily play counts over time by stream type
+  tautulli_activity            — Who's watching right now
+  tautulli_history             — Recent playback history
+  tautulli_recently_added      — What's new in your Plex libraries
+  tautulli_search              — Search Plex content by title
+  tautulli_user_stats          — Per-user watch statistics
+  tautulli_library_stats       — Library-level statistics
+  tautulli_most_watched        — Top content by plays (configurable time range)
+  tautulli_server_info         — Plex server identity and status
+  tautulli_status              — Server configuration and reachability
+  tautulli_transcode_stats     — Direct play vs transcode breakdown by platform
+  tautulli_platform_stats      — Top platforms/devices by plays and watch time
+  tautulli_stream_resolution   — Source vs delivered resolution analysis
+  tautulli_plays_by_date       — Daily play counts over time by stream type
+  tautulli_plays_by_day_of_week — Weekly viewing patterns
+  tautulli_plays_by_hour       — Hourly viewing distribution
 
 Environment variables:
   TAUTULLI_URL        — Tautulli base URL (required)
@@ -25,6 +29,7 @@ Environment variables:
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 import httpx
 from fastmcp import FastMCP
@@ -34,11 +39,16 @@ from fastmcp import FastMCP
 TAUTULLI_URL = os.environ.get("TAUTULLI_URL", "")
 TAUTULLI_API_KEY = os.environ.get("TAUTULLI_API_KEY", "")
 # Default true: set to "false" if using self-signed certs (e.g. Tailscale serve).
-TLS_VERIFY = os.environ.get("TAUTULLI_TLS_VERIFY", "true").lower() in ("true", "1", "yes")
+TLS_VERIFY = os.environ.get("TAUTULLI_TLS_VERIFY", "true").lower() in (
+    "true",
+    "1",
+    "yes",
+)
 
 # ── Input validation ────────────────────────────────────────────────────
 
 _VALID_MEDIA_TYPES = {"movie", "episode", "track", "live"}
+_VALID_RECENTLY_ADDED_TYPES = {"movie", "show", "artist"}
 _VALID_CATEGORIES = {"tv", "movies", "music", "users"}
 _VALID_STAT_TYPES = {"plays", "duration"}
 _MAX_STRING_LEN = 200
@@ -53,6 +63,7 @@ def _clamp_days(days: int, default: int = 30, maximum: int = _MAX_DAYS) -> int:
 def _sanitize_str(value: str) -> str:
     """Truncate and strip control characters from user input."""
     return value[:_MAX_STRING_LEN].strip()
+
 
 TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 
@@ -135,7 +146,7 @@ def _fmt_session(s: dict) -> str:
     else:
         title = s.get("full_title") or s.get("title", "Unknown")
 
-    parts = [f"{user} {state} \"{title}\""]
+    parts = [f'{user} {state} "{title}"']
     parts.append(f"{progress}%")
     if player:
         parts.append(f"on {player}")
@@ -172,7 +183,9 @@ async def tautulli_activity() -> str:
     wan_bw = data.get("wan_bandwidth", 0)
     lan_bw = data.get("lan_bandwidth", 0)
     if total_bw:
-        lines.append(f"\nBandwidth: {int(total_bw) / 1000:.1f} Mbps total (LAN: {int(lan_bw) / 1000:.1f}, WAN: {int(wan_bw) / 1000:.1f})")
+        lines.append(
+            f"\nBandwidth: {int(total_bw) / 1000:.1f} Mbps total (LAN: {int(lan_bw) / 1000:.1f}, WAN: {int(wan_bw) / 1000:.1f})"
+        )
 
     return "\n".join(lines)
 
@@ -240,13 +253,124 @@ async def tautulli_history(
         state = r.get("state", "")
         state_str = f" [{state}]" if state and state != "stopped" else ""
         player_str = f" on {player}" if player else ""
-        lines.append(f"  • {user_name}: \"{title}\" ({duration}{player_str}){state_str}")
+        lines.append(f'  • {user_name}: "{title}" ({duration}{player_str}){state_str}')
 
     total_dur = data.get("total_duration", "")
     if total_dur:
         lines.append(f"\nTotal watch time: {total_dur}")
 
     return "\n".join(lines)
+
+
+@mcp.tool()
+async def tautulli_recently_added(count: int = 10, media_type: str = "") -> str:
+    """Get recently added content to Plex — shows what's new in your libraries.
+
+    Args:
+        count: Number of items to return (default 10, max 50).
+        media_type: Filter by type: "movie", "show", "artist". Empty for all.
+    """
+    count = min(max(1, count), 50)
+    params: dict = {"count": str(count)}
+    if media_type:
+        media_type = media_type.lower().strip()
+        if media_type not in _VALID_RECENTLY_ADDED_TYPES:
+            return f"Invalid media_type: must be one of {', '.join(sorted(_VALID_RECENTLY_ADDED_TYPES))}"
+        params["media_type"] = media_type
+
+    data = await _api("get_recently_added", **params)
+    items = data.get("recently_added", [])
+
+    if not items:
+        return "No recently added content found."
+
+    lines = [f"Recently added (last {count}):\n"]
+    for i, item in enumerate(items, 1):
+        title = item.get("title", "Unknown")
+        year = item.get("year", "")
+        mtype = item.get("media_type", "")
+        library = item.get("library_name", "")
+        added_at = item.get("added_at")
+
+        if year:
+            title = f"{title} ({year})"
+
+        added_str = ""
+        if added_at:
+            try:
+                dt = datetime.fromtimestamp(int(added_at), tz=timezone.utc)
+                added_str = f", added {dt.strftime('%Y-%m-%d')}"
+            except (ValueError, OSError):
+                pass
+
+        library_str = f", library: {library}" if library else ""
+        lines.append(f"  {i}. {title} — {mtype}{added_str}{library_str}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def tautulli_search(query: str, limit: int = 10) -> str:
+    """Search Plex content by title — find movies, shows, episodes, and tracks.
+
+    Args:
+        query: Search text (required).
+        limit: Maximum results per category (default 10, max 25).
+    """
+    query = _sanitize_str(query)
+    if not query:
+        return "Search query cannot be empty."
+    limit = min(max(1, limit), 25)
+
+    data = await _api("search", query=query, limit=str(limit))
+    results_list = data.get("results_list", {})
+
+    if not results_list:
+        return f'No results for "{query}".'
+
+    # Friendly labels for Tautulli's media type keys
+    _type_labels = {
+        "movie": "Movies",
+        "show": "TV Shows",
+        "season": "Seasons",
+        "episode": "Episodes",
+        "artist": "Artists",
+        "album": "Albums",
+        "track": "Tracks",
+    }
+
+    lines = [f'Search results for "{query}":\n']
+    for media_type, items in results_list.items():
+        if not items:
+            continue
+
+        label = _type_labels.get(media_type, media_type.title())
+        lines.append(f"{label}:")
+        for item in items:
+            title = item.get("title", "Unknown")
+            year = item.get("year", "")
+            library = item.get("library_name", "")
+
+            # For episodes, include show name and episode number
+            if media_type == "episode":
+                show = item.get("grandparent_title", "")
+                ep_idx = item.get("media_index", "")
+                season_idx = item.get("parent_media_index", "")
+                if show and season_idx and ep_idx:
+                    title = (
+                        f'{show} — S{int(season_idx):02d}E{int(ep_idx):02d} "{title}"'
+                    )
+                elif show:
+                    title = f"{show} — {title}"
+
+            if year:
+                title = f"{title} ({year})"
+
+            library_str = f" — {library}" if library else ""
+            lines.append(f"  • {title}{library_str}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
 
 
 @mcp.tool()
@@ -274,14 +398,13 @@ async def tautulli_user_stats(user: str = "", days: int = 30) -> str:
         plays = u.get("plays", 0)
         duration = _fmt_duration(u.get("duration", 0))
         last_played = u.get("last_played", "")
-        last_seen = u.get("last_seen")
 
         if plays == 0:
             continue  # Skip inactive users
 
         parts = [f"  • {name}: {plays} plays, {duration} watched"]
         if last_played:
-            parts.append(f"last: \"{last_played}\"")
+            parts.append(f'last: "{last_played}"')
 
         lines.append(" — ".join(parts))
 
@@ -317,8 +440,10 @@ async def tautulli_library_stats() -> str:
         else:
             count_str = f"{count} items"
 
-        last_str = f" — last: \"{last}\"" if last else ""
-        lines.append(f"  • {name} ({section_type}): {count_str}, {plays} plays{last_str}")
+        last_str = f' — last: "{last}"' if last else ""
+        lines.append(
+            f"  • {name} ({section_type}): {count_str}, {plays} plays{last_str}"
+        )
 
     return "\n".join(lines)
 
@@ -338,9 +463,13 @@ async def tautulli_most_watched(
     """
     days = _clamp_days(days)
     if category.lower() not in _VALID_CATEGORIES:
-        return f"Invalid category: must be one of {', '.join(sorted(_VALID_CATEGORIES))}"
+        return (
+            f"Invalid category: must be one of {', '.join(sorted(_VALID_CATEGORIES))}"
+        )
     if stat_type not in _VALID_STAT_TYPES:
-        return f"Invalid stat_type: must be one of {', '.join(sorted(_VALID_STAT_TYPES))}"
+        return (
+            f"Invalid stat_type: must be one of {', '.join(sorted(_VALID_STAT_TYPES))}"
+        )
     stat_map = {
         "tv": "top_tv",
         "movies": "top_movies",
@@ -350,7 +479,9 @@ async def tautulli_most_watched(
     stat_id = stat_map.get(category.lower(), "top_tv")
     stats_type = "total_plays" if stat_type == "plays" else "total_duration"
 
-    data = await _api("get_home_stats", time_range=str(days), stat_id=stat_id, stats_type=stats_type)
+    data = await _api(
+        "get_home_stats", time_range=str(days), stat_id=stat_id, stats_type=stats_type
+    )
     rows = data.get("rows", [])
     title = data.get("stat_title", f"Top {category}")
 
@@ -409,7 +540,7 @@ async def tautulli_status() -> str:
         data = await _api("get_server_info")
         name = data.get("pms_name", "Unknown")
         version = data.get("pms_version", "?")
-        lines.append(f"\nReachable: yes — Plex server \"{name}\" v{version}")
+        lines.append(f'\nReachable: yes — Plex server "{name}" v{version}')
     except Exception:
         lines.append("\nReachable: NO — connection failed")
 
@@ -481,11 +612,15 @@ async def tautulli_transcode_stats(days: int = 30) -> str:
         if tc:
             parts.append(f"{tc} transcode")
 
-        lines.append(f"  • {r['name']}: {total} plays — {', '.join(parts)} ({tc_pct:.0f}% transcode)")
+        lines.append(
+            f"  • {r['name']}: {total} plays — {', '.join(parts)} ({tc_pct:.0f}% transcode)"
+        )
 
     if all_total:
         overall_tc_pct = all_tc / all_total * 100
-        lines.append(f"\nOverall: {all_dp} direct play, {all_ds} direct stream, {all_tc} transcode ({overall_tc_pct:.0f}% transcode)")
+        lines.append(
+            f"\nOverall: {all_dp} direct play, {all_ds} direct stream, {all_tc} transcode ({overall_tc_pct:.0f}% transcode)"
+        )
 
     return "\n".join(lines)
 
@@ -513,7 +648,9 @@ async def tautulli_platform_stats(days: int = 30) -> str:
 
     total_plays = sum(r.get("total_plays", 0) for r in rows)
     total_dur = sum(r.get("total_duration", 0) for r in rows)
-    lines.append(f"\nTotal: {total_plays} plays, {_fmt_duration(total_dur)} watched across {len(rows)} platforms")
+    lines.append(
+        f"\nTotal: {total_plays} plays, {_fmt_duration(total_dur)} watched across {len(rows)} platforms"
+    )
 
     return "\n".join(lines)
 
@@ -562,7 +699,9 @@ async def tautulli_stream_resolution(days: int = 30) -> str:
     str_4k = next((r["total"] for r in stream_rows if r["name"] == "4k"), 0)
     if src_4k > 0 and str_4k < src_4k:
         downgraded = src_4k - str_4k
-        lines.append(f"\nNote: {downgraded} of {src_4k} 4K source plays were transcoded to lower resolution.")
+        lines.append(
+            f"\nNote: {downgraded} of {src_4k} 4K source plays were transcoded to lower resolution."
+        )
 
     return "\n".join(lines)
 
@@ -608,6 +747,91 @@ async def tautulli_plays_by_date(days: int = 14) -> str:
     return "\n".join(lines)
 
 
+_DAY_NAMES = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+]
+
+
+@mcp.tool()
+async def tautulli_plays_by_day_of_week(days: int = 30) -> str:
+    """Get weekly viewing patterns — which days of the week see the most Plex activity.
+
+    Args:
+        days: Time range in days (default 30).
+    """
+    days = _clamp_days(days)
+    data = await _api("get_plays_by_dayofweek", time_range=str(days))
+    rows = _chart_totals(data)
+
+    if not rows:
+        return f"No play data for the last {days} days."
+
+    # Find peak day
+    peak_idx = max(range(len(rows)), key=lambda i: rows[i]["total"])
+    max_total = max(r["total"] for r in rows) or 1
+
+    # Build series breakdown (keys vary by endpoint: TV/Movies/Music, etc.)
+    series_keys = [k for k in rows[0] if k not in ("name", "total")] if rows else []
+
+    lines = [f"Plays by day of week (last {days} days):\n"]
+    for i, r in enumerate(rows):
+        total = r["total"]
+        bar_len = int(total / max_total * 30) if max_total else 0
+        bar = "█" * bar_len
+        peak = "  ← peak" if i == peak_idx else ""
+        day_name = _DAY_NAMES[i] if i < len(_DAY_NAMES) else r["name"]
+        breakdown = ", ".join(f"{k}:{r.get(k, 0)}" for k in series_keys)
+        lines.append(f"  {day_name:<9s}: {total:3d} {bar}  ({breakdown}){peak}")
+
+    total_all = sum(r["total"] for r in rows)
+    avg = total_all / 7 if rows else 0
+    lines.append(f"\nTotal: {total_all} plays, avg {avg:.1f}/day")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def tautulli_plays_by_hour(days: int = 30) -> str:
+    """Get hourly viewing distribution — when people watch Plex throughout the day.
+
+    Args:
+        days: Time range in days (default 30).
+    """
+    days = _clamp_days(days)
+    data = await _api("get_plays_by_hourofday", time_range=str(days))
+    rows = _chart_totals(data)
+
+    if not rows:
+        return f"No play data for the last {days} days."
+
+    # Find peak hour
+    peak_idx = max(range(len(rows)), key=lambda i: rows[i]["total"])
+    max_total = max(r["total"] for r in rows) or 1
+
+    series_keys = [k for k in rows[0] if k not in ("name", "total")] if rows else []
+
+    lines = [f"Plays by hour of day (last {days} days):\n"]
+    for i, r in enumerate(rows):
+        total = r["total"]
+        bar_len = int(total / max_total * 30) if max_total else 0
+        bar = "█" * bar_len
+        peak = "  ← peak" if i == peak_idx else ""
+        breakdown = ", ".join(f"{k}:{r.get(k, 0)}" for k in series_keys)
+        lines.append(f"  {i:02d}:00  {total:3d} {bar}  ({breakdown}){peak}")
+
+    peak_hour = f"{peak_idx:02d}:00"
+    total_all = sum(r["total"] for r in rows)
+    lines.append(f"\nTotal: {total_all} plays, peak hour: {peak_hour}")
+
+    return "\n".join(lines)
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -619,6 +843,9 @@ if __name__ == "__main__":
     if not TAUTULLI_API_KEY:
         missing.append("TAUTULLI_API_KEY")
     if missing:
-        print(f"Error: Required environment variable(s) not set: {', '.join(missing)}", file=sys.stderr)
+        print(
+            f"Error: Required environment variable(s) not set: {', '.join(missing)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
     mcp.run()
