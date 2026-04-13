@@ -100,3 +100,22 @@ class TestIntegrationTools:
     async def test_stream_data_invalid_live(self):
         result = await tautulli.tautulli_stream_data()
         assert "Either row_id or session_key must be provided" in result
+
+    async def test_history_exposes_stream_fields_live(self):
+        """Verify transcode_decision and ip_address from the raw API appear in formatted output."""
+        raw = await tautulli._api("get_history", length="10")
+        records = raw.get("data", [])
+        if not records:
+            pytest.skip("No history records available on this server")
+
+        formatted = await tautulli.tautulli_history(length=10)
+
+        for r in records:
+            transcode = r.get("transcode_decision", "")
+            ip = r.get("ip_address", "")
+            if transcode:
+                assert transcode in formatted, (
+                    f"Expected transcode_decision '{transcode}' in output"
+                )
+            if ip:
+                assert ip in formatted, f"Expected ip_address '{ip}' in output"

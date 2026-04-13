@@ -28,6 +28,7 @@ Environment variables:
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -218,6 +219,7 @@ async def tautulli_history(
     media_type: str = "",
     search: str = "",
     start_date: str = "",
+    include_performance: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """Get recent Plex playback history.
@@ -228,6 +230,8 @@ async def tautulli_history(
         media_type: Filter by type: "movie", "episode", "track" (audiobook).
         search: Text search in titles.
         start_date: Only show history from this date (YYYY-MM-DD).
+        include_performance: Also fetch stream bitrate per record via get_stream_data
+            (makes one extra API call per record — use with small lengths).
     """
     length = min(max(1, length), 50)
     params: dict = {"length": str(length)}
@@ -248,6 +252,19 @@ async def tautulli_history(
 
     if not records:
         return "No playback history found matching filters."
+
+    # Optionally fetch stream performance data in parallel (one call per row_id)
+    stream_perf: dict[int, dict] = {}
+    if include_performance:
+        row_ids = [r["row_id"] for r in records if r.get("row_id")]
+        if row_ids:
+            results = await asyncio.gather(
+                *[_api("get_stream_data", ctx=ctx, row_id=rid) for rid in row_ids],
+                return_exceptions=True,
+            )
+            for rid, res in zip(row_ids, results):
+                if isinstance(res, dict) and res:
+                    stream_perf[rid] = res
 
     lines = [f"Playback history ({len(records)} of {total} records):\n"]
     for r in records:
@@ -274,11 +291,25 @@ async def tautulli_history(
             title = r.get("full_title") or r.get("title", "Unknown")
 
         state = r.get("state", "")
+        transcode = r.get("transcode_decision", "")
+        ip = r.get("ip_address", "")
+
         state_str = f" [{state}]" if state and state != "stopped" else ""
         player_str = f" on {player}" if player else ""
+        transcode_str = f", {transcode}" if transcode else ""
+        ip_str = f", {ip}" if ip else ""
         row_str = f" [row_id: {row_id}]" if row_id else ""
+
+        bitrate_str = ""
+        if include_performance and row_id and row_id in stream_perf:
+            bps = stream_perf[row_id].get("stream_bitrate") or stream_perf[row_id].get(
+                "bitrate"
+            )
+            if bps:
+                bitrate_str = f", {int(float(bps))} kbps"
+
         lines.append(
-            f'  • {user_name}: "{title}" ({duration}{player_str}){state_str}{row_str}'
+            f'  • {user_name}: "{title}" ({duration}{player_str}{transcode_str}{ip_str}{bitrate_str}){state_str}{row_str}'
         )
 
     total_dur = data.get("total_duration", "")
