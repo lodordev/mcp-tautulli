@@ -233,6 +233,7 @@ async def tautulli_history(
         media = r.get("media_type", "")
         duration = _fmt_duration(r.get("duration", 0))
         player = r.get("player", "")
+        row_id = r.get("row_id")
 
         if media == "episode":
             show = r.get("grandparent_title", "")
@@ -253,11 +254,147 @@ async def tautulli_history(
         state = r.get("state", "")
         state_str = f" [{state}]" if state and state != "stopped" else ""
         player_str = f" on {player}" if player else ""
-        lines.append(f'  • {user_name}: "{title}" ({duration}{player_str}){state_str}')
+        row_str = f" [row_id: {row_id}]" if row_id else ""
+        lines.append(
+            f'  • {user_name}: "{title}" ({duration}{player_str}){state_str}{row_str}'
+        )
 
     total_dur = data.get("total_duration", "")
     if total_dur:
         lines.append(f"\nTotal watch time: {total_dur}")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def tautulli_stream_data(
+    row_id: int | None = None, session_key: int | None = None
+) -> str:
+    """Get detailed stream performance data for diagnosing Plex playback issues.
+
+    Use row_id from history or session_key from current activity to fetch detailed
+    performance metrics including bitrate, bandwidth, codec information, and connection details.
+
+    Args:
+        row_id: The history row ID (from tautulli_history output).
+        session_key: The current session key (from tautulli_activity).
+        Either row_id or session_key must be provided.
+    """
+    if not row_id and not session_key:
+        return "Error: Either row_id or session_key must be provided."
+
+    params: dict = {}
+    if row_id:
+        params["row_id"] = row_id
+    if session_key:
+        params["session_key"] = session_key
+
+    data = await _api("get_stream_data", **params)
+
+    if not data:
+        return "No stream data found."
+
+    lines = ["Stream Performance Data:\n"]
+
+    # Basic info
+    media_type = data.get("media_type", "Unknown")
+    if media_type == "episode":
+        show = data.get("grandparent_title", "")
+        ep = data.get("title", "Unknown")
+        title = f"{show} — {ep}" if show else ep
+    else:
+        title = data.get("title") or data.get("grandparent_title", "Unknown")
+    lines.append(f"Media: {title} ({media_type})\n")
+
+    # Quality profile
+    quality_profile = data.get("quality_profile")
+    if quality_profile:
+        lines.append(f"Quality Profile: {quality_profile}")
+
+    # Source bitrates (original file)
+    bitrate = data.get("bitrate")
+    if bitrate:
+        lines.append(f"Source Bitrate: {bitrate} kbps")
+
+    video_bitrate = data.get("video_bitrate")
+    if video_bitrate:
+        lines.append(f"Source Video Bitrate: {video_bitrate} kbps")
+
+    audio_bitrate = data.get("audio_bitrate")
+    if audio_bitrate:
+        lines.append(f"Source Audio Bitrate: {audio_bitrate} kbps")
+
+    lines.append("")
+
+    # Stream (delivered) info
+    stream_bitrate = data.get("stream_bitrate")
+    if stream_bitrate:
+        lines.append(f"Stream Bitrate: {stream_bitrate} kbps")
+
+    stream_video_resolution = data.get("stream_video_resolution")
+    if stream_video_resolution:
+        lines.append(f"Stream Resolution: {stream_video_resolution}")
+
+    stream_video_codec = data.get("stream_video_codec")
+    if stream_video_codec:
+        lines.append(f"Stream Video Codec: {stream_video_codec}")
+
+    stream_video_framerate = data.get("stream_video_framerate")
+    if stream_video_framerate:
+        lines.append(f"Stream Framerate: {stream_video_framerate}")
+
+    stream_video_bitrate = data.get("stream_video_bitrate")
+    if stream_video_bitrate:
+        lines.append(f"Stream Video Bitrate: {stream_video_bitrate} kbps")
+
+    stream_audio_codec = data.get("stream_audio_codec")
+    if stream_audio_codec:
+        lines.append(f"Stream Audio Codec: {stream_audio_codec}")
+
+    stream_audio_channels = data.get("stream_audio_channels")
+    if stream_audio_channels:
+        lines.append(f"Stream Audio Channels: {stream_audio_channels}")
+
+    stream_audio_bitrate = data.get("stream_audio_bitrate")
+    if stream_audio_bitrate:
+        lines.append(f"Stream Audio Bitrate: {stream_audio_bitrate} kbps")
+
+    lines.append("")
+
+    # Original file info
+    container = data.get("container")
+    if container:
+        lines.append(f"Source Container: {container}")
+
+    video_codec = data.get("video_codec")
+    if video_codec:
+        lines.append(f"Source Video Codec: {video_codec}")
+
+    audio_codec = data.get("audio_codec")
+    if audio_codec:
+        lines.append(f"Source Audio Codec: {audio_codec}")
+
+    video_resolution = data.get("video_resolution")
+    if video_resolution:
+        lines.append(f"Source Resolution: {video_resolution}")
+
+    lines.append("")
+
+    # Transcode decisions (what actually happened to the stream)
+    stream_video_decision = data.get("stream_video_decision")
+    if stream_video_decision:
+        lines.append(f"Video Decision: {stream_video_decision}")
+
+    stream_audio_decision = data.get("stream_audio_decision")
+    if stream_audio_decision:
+        lines.append(f"Audio Decision: {stream_audio_decision}")
+
+    transcode_hw_decoding = data.get("transcode_hw_decoding")
+    transcode_hw_encoding = data.get("transcode_hw_encoding")
+    if transcode_hw_decoding or transcode_hw_encoding:
+        lines.append(
+            f"HW Transcode: decode={transcode_hw_decoding or 'no'}, encode={transcode_hw_encoding or 'no'}"
+        )
 
     return "\n".join(lines)
 

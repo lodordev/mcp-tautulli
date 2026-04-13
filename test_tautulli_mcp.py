@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastmcp import Client
-from fastmcp.client.types import TextContent  # type: ignore
+from mcp.types import TextContent
 
 import tautulli
 

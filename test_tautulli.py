@@ -306,6 +306,119 @@ class TestTautulliHistory:
         result = await tautulli.tautulli_history(media_type="invalid")
         assert "Invalid media_type" in result
 
+    async def test_history_with_episode(self):
+        """Test history output with an episode record."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Alice",
+                        "media_type": "episode",
+                        "grandparent_title": "Breaking Bad",
+                        "title": "Pilot",
+                        "duration": 3600,
+                        "player": "AppleTV",
+                        "row_id": 42,
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "Breaking Bad" in result
+            assert "Pilot" in result
+            assert "row_id: 42" in result
+
+    async def test_history_with_movie(self):
+        """Test history output with a movie record."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Bob",
+                        "media_type": "movie",
+                        "title": "Dune",
+                        "year": 2021,
+                        "duration": 9000,
+                        "player": "Roku",
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "Dune (2021)" in result
+
+    async def test_history_with_track(self):
+        """Test history output with a music track record."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Alice",
+                        "media_type": "track",
+                        "grandparent_title": "Dark Side of the Moon",
+                        "title": "Money",
+                        "duration": 380,
+                        "player": "Sonos",
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "Dark Side of the Moon" in result
+            assert "Money" in result
+
+    async def test_history_with_unknown_type(self):
+        """Test history falls back to full_title for unknown media types."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Dave",
+                        "media_type": "live",
+                        "full_title": "Live News",
+                        "duration": 1800,
+                        "player": "TV",
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "Live News" in result
+
+    async def test_history_with_active_state(self):
+        """Test history shows state for non-stopped streams."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Alice",
+                        "media_type": "movie",
+                        "title": "Test",
+                        "duration": 100,
+                        "state": "paused",
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "[paused]" in result
+
+    async def test_history_with_user_filter(self):
+        """Test that user filter is passed to API."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"data": [], "recordsTotal": 0}
+            await tautulli.tautulli_history(user="alice")
+            mock_api.assert_called_once()
+            assert mock_api.call_args[1].get("user") == "alice"
+
+    async def test_history_with_search_and_date(self):
+        """Test that search and start_date filters are passed to API."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"data": [], "recordsTotal": 0}
+            await tautulli.tautulli_history(search="dune", start_date="2024-01-01")
+            assert mock_api.call_args[1].get("search") == "dune"
+            assert mock_api.call_args[1].get("start_date") == "2024-01-01"
+
     async def test_history_length_clamping(self):
         """Test that length is properly clamped."""
         with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
@@ -322,6 +435,88 @@ class TestTautulliHistory:
             mock_api.return_value = {"data": [], "recordsTotal": 0}
             result = await tautulli.tautulli_history()
             assert "No playback history found" in result
+
+
+class TestTautulliStreamData:
+    """Test tautulli_stream_data tool."""
+
+    async def test_stream_data_no_params(self):
+        """Test stream_data with no parameters."""
+        result = await tautulli.tautulli_stream_data()
+        assert "Either row_id or session_key must be provided" in result
+
+    async def test_stream_data_with_row_id(self):
+        """Test stream_data with row_id parameter."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "media_type": "movie",
+                "title": "Test Movie",
+                "quality_profile": "Original",
+                "bitrate": 15000,
+                "video_bitrate": 14000,
+                "audio_bitrate": 1000,
+                "stream_bitrate": 15000,
+                "stream_video_resolution": "1080",
+                "stream_video_codec": "h264",
+                "stream_video_bitrate": 14000,
+                "stream_audio_codec": "aac",
+                "stream_audio_channels": 6,
+                "stream_audio_bitrate": 1000,
+                "stream_video_decision": "direct play",
+                "stream_audio_decision": "direct play",
+                "container": "mkv",
+                "video_codec": "h264",
+                "audio_codec": "dca",
+                "video_resolution": "1080",
+            }
+            result = await tautulli.tautulli_stream_data(row_id=123)
+            assert "Stream Performance Data" in result
+            assert "Test Movie" in result
+            assert "Original" in result
+            assert "15000 kbps" in result
+            assert "1080" in result
+            assert "direct play" in result
+
+    async def test_stream_data_with_session_key(self):
+        """Test stream_data with session_key parameter — episode title includes both show and episode name."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "media_type": "episode",
+                "grandparent_title": "Test Show",
+                "title": "Episode 1",
+                "bitrate": "8000",
+            }
+            result = await tautulli.tautulli_stream_data(session_key=456)
+            assert "Stream Performance Data" in result
+            assert "Test Show" in result
+            assert "Episode 1" in result
+
+    async def test_stream_data_no_data(self):
+        """Test stream_data when no data is returned."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {}
+            result = await tautulli.tautulli_stream_data(row_id=123)
+            assert "No stream data found" in result
+
+    async def test_history_includes_row_id(self):
+        """Test that history output includes row_id."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Test User",
+                        "media_type": "movie",
+                        "title": "Test Movie",
+                        "year": 2020,
+                        "duration": 7200,
+                        "player": "Test Player",
+                        "row_id": 999,
+                    }
+                ],
+                "recordsTotal": 1,
+            }
+            result = await tautulli.tautulli_history()
+            assert "row_id: 999" in result
 
 
 class TestTautulliRecentlyAdded:
@@ -366,6 +561,44 @@ class TestTautulliSearch:
         result = await tautulli.tautulli_search(query="")
         assert "Search query cannot be empty" in result
 
+    async def test_search_with_episode_results(self):
+        """Test search with episode results — covers episode title formatting."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "results_list": {
+                    "episode": [
+                        {
+                            "title": "Pilot",
+                            "grandparent_title": "Breaking Bad",
+                            "parent_media_index": "1",
+                            "media_index": "1",
+                            "library_name": "TV Shows",
+                        }
+                    ]
+                }
+            }
+            result = await tautulli.tautulli_search(query="pilot")
+            assert "Breaking Bad" in result
+            assert "S01E01" in result
+
+    async def test_search_with_episode_no_season(self):
+        """Test episode result without season/episode numbers."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "results_list": {
+                    "episode": [
+                        {
+                            "title": "Pilot",
+                            "grandparent_title": "Some Show",
+                            "library_name": "TV Shows",
+                        }
+                    ]
+                }
+            }
+            result = await tautulli.tautulli_search(query="pilot")
+            assert "Some Show" in result
+            assert "Pilot" in result
+
     async def test_search_no_results(self):
         """Test search with no results."""
         with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
@@ -397,6 +630,24 @@ class TestTautulliUserStats:
             mock_api.return_value = {"data": []}
             result = await tautulli.tautulli_user_stats()
             assert "No users found" in result
+
+    async def test_user_stats_skips_inactive_users(self):
+        """Test that users with 0 plays are skipped."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "data": [
+                    {
+                        "friendly_name": "Active",
+                        "plays": 10,
+                        "duration": 3600,
+                        "last_played": "Movie",
+                    },
+                    {"friendly_name": "Inactive", "plays": 0, "duration": 0},
+                ]
+            }
+            result = await tautulli.tautulli_user_stats()
+            assert "Active" in result
+            assert "Inactive" not in result
 
     async def test_user_stats_with_users(self):
         """Test user_stats with users."""
@@ -445,27 +696,6 @@ class TestTautulliLibraryStats:
             result = await tautulli.tautulli_library_stats()
             assert "TV Shows" in result
             assert "10 shows, 50 seasons, 500 episodes" in result
-
-
-class TestTautulliMostWatched:
-    """Test tautulli_most_watched tool."""
-
-    async def test_most_watched_invalid_category(self):
-        """Test most_watched with invalid category."""
-        result = await tautulli.tautulli_most_watched(category="invalid")
-        assert "Invalid category" in result
-
-    async def test_most_watched_invalid_stat_type(self):
-        """Test most_watched with invalid stat_type."""
-        result = await tautulli.tautulli_most_watched(stat_type="invalid")
-        assert "Invalid stat_type" in result
-
-    async def test_most_watched_no_data(self):
-        """Test most_watched with no data."""
-        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
-            mock_api.return_value = {"rows": [], "stat_title": "Top TV"}
-            result = await tautulli.tautulli_most_watched()
-            assert "No tv data" in result
 
 
 class TestTautulliServerInfo:
@@ -522,6 +752,52 @@ class TestTautulliStatus:
             assert "Reachable: NO" in result
 
 
+class TestTautulliMostWatched:
+    """Test tautulli_most_watched tool."""
+
+    async def test_most_watched_invalid_category(self):
+        """Test most_watched with invalid category."""
+        result = await tautulli.tautulli_most_watched(category="invalid")
+        assert "Invalid category" in result
+
+    async def test_most_watched_invalid_stat_type(self):
+        """Test most_watched with invalid stat_type."""
+        result = await tautulli.tautulli_most_watched(stat_type="invalid")
+        assert "Invalid stat_type" in result
+
+    async def test_most_watched_no_data(self):
+        """Test most_watched with no data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"rows": [], "stat_title": "Top Movies"}
+            result = await tautulli.tautulli_most_watched()
+            assert "No" in result
+
+    async def test_most_watched_with_data(self):
+        """Test most_watched with results."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "rows": [
+                    {
+                        "title": "Dune",
+                        "year": 2021,
+                        "total_plays": 50,
+                        "total_duration": 180000,
+                    },
+                    {
+                        "title": "Oppenheimer",
+                        "year": 2023,
+                        "total_plays": 30,
+                        "total_duration": 108000,
+                    },
+                ],
+                "stat_title": "Top Movies",
+            }
+            result = await tautulli.tautulli_most_watched()
+            assert "Dune (2021)" in result
+            assert "50 plays" in result
+            assert "Oppenheimer (2023)" in result
+
+
 class TestTautulliTranscodeStats:
     """Test tautulli_transcode_stats tool."""
 
@@ -531,6 +807,22 @@ class TestTautulliTranscodeStats:
             mock_api.return_value = {"categories": [], "series": []}
             result = await tautulli.tautulli_transcode_stats()
             assert "No stream data" in result
+
+    async def test_transcode_stats_with_data(self):
+        """Test transcode_stats with platform data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "categories": ["Apple TV", "Roku"],
+                "series": [
+                    {"name": "Direct Play", "data": [100, 50]},
+                    {"name": "Direct Stream", "data": [10, 5]},
+                    {"name": "Transcode", "data": [20, 30]},
+                ],
+            }
+            result = await tautulli.tautulli_transcode_stats()
+            assert "Apple TV" in result
+            assert "direct play" in result
+            assert "transcode" in result
 
 
 class TestTautulliPlatformStats:
@@ -543,6 +835,24 @@ class TestTautulliPlatformStats:
             result = await tautulli.tautulli_platform_stats()
             assert "No platform data" in result
 
+    async def test_platform_stats_with_data(self):
+        """Test platform_stats with data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "rows": [
+                    {
+                        "platform": "Apple TV",
+                        "total_plays": 200,
+                        "total_duration": 720000,
+                    },
+                    {"platform": "Roku", "total_plays": 100, "total_duration": 360000},
+                ]
+            }
+            result = await tautulli.tautulli_platform_stats()
+            assert "Apple TV" in result
+            assert "200 plays" in result
+            assert "Roku" in result
+
 
 class TestTautulliStreamResolution:
     """Test tautulli_stream_resolution tool."""
@@ -553,6 +863,45 @@ class TestTautulliStreamResolution:
             mock_api.return_value = {"categories": [], "series": []}
             result = await tautulli.tautulli_stream_resolution()
             assert "No resolution data" in result
+
+    async def test_stream_resolution_with_data(self):
+        """Test stream_resolution with source and stream data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "categories": ["1080", "4k"],
+                "series": [
+                    {"name": "Direct Play", "data": [80, 20]},
+                    {"name": "Direct Stream", "data": [5, 0]},
+                    {"name": "Transcode", "data": [10, 5]},
+                ],
+            }
+            result = await tautulli.tautulli_stream_resolution()
+            assert "1080" in result or "Resolution analysis" in result
+
+    async def test_stream_resolution_4k_downgrade_note(self):
+        """Test that a note is shown when 4K content is downgraded."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            # source has 4k plays, stream has fewer 4k plays = downgrade occurred
+            mock_api.side_effect = [
+                {  # source resolution
+                    "categories": ["4k"],
+                    "series": [
+                        {"name": "Direct Play", "data": [10]},
+                        {"name": "Direct Stream", "data": [0]},
+                        {"name": "Transcode", "data": [5]},
+                    ],
+                },
+                {  # stream resolution — fewer 4k delivered
+                    "categories": ["4k"],
+                    "series": [
+                        {"name": "Direct Play", "data": [10]},
+                        {"name": "Direct Stream", "data": [0]},
+                        {"name": "Transcode", "data": [0]},
+                    ],
+                },
+            ]
+            result = await tautulli.tautulli_stream_resolution()
+            assert "4K" in result or "4k" in result
 
 
 class TestTautulliPlaysByDate:
@@ -565,6 +914,19 @@ class TestTautulliPlaysByDate:
             result = await tautulli.tautulli_plays_by_date()
             assert "No play data" in result
 
+    async def test_plays_by_date_with_data(self):
+        """Test plays_by_date with data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "categories": ["2024-01-01", "2024-01-02"],
+                "series": [
+                    {"name": "Direct Play", "data": [5, 10]},
+                    {"name": "Transcode", "data": [2, 3]},
+                ],
+            }
+            result = await tautulli.tautulli_plays_by_date()
+            assert "2024-01-01" in result or "plays" in result.lower()
+
 
 class TestTautulliPlaysByDayOfWeek:
     """Test tautulli_plays_by_day_of_week tool."""
@@ -576,15 +938,55 @@ class TestTautulliPlaysByDayOfWeek:
             result = await tautulli.tautulli_plays_by_day_of_week()
             assert "No play data" in result
 
+    async def test_plays_by_day_of_week_with_data(self):
+        """Test plays_by_day_of_week with data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "categories": [
+                    "Sunday",
+                    "Monday",
+                    "Tuesday",
+                    "Wednesday",
+                    "Thursday",
+                    "Friday",
+                    "Saturday",
+                ],
+                "series": [
+                    {"name": "TV", "data": [10, 20, 15, 12, 8, 25, 30]},
+                    {"name": "Movies", "data": [5, 3, 4, 2, 1, 8, 10]},
+                ],
+            }
+            result = await tautulli.tautulli_plays_by_day_of_week()
+            assert "Monday" in result
+            assert "peak" in result
+            assert "Total:" in result
+
 
 class TestTautulliPlaysByHour:
-    """Test tautulli_plays_by_hour tool through MCP Client."""
+    """Test tautulli_plays_by_hour tool."""
 
     async def test_plays_by_hour_no_data(self):
         with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
             mock_api.return_value = {"categories": [], "series": []}
             result = await tautulli.tautulli_plays_by_hour()
             assert "No play data" in result
+
+    async def test_plays_by_hour_with_data(self):
+        """Test plays_by_hour with data."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "categories": [str(i) for i in range(24)],
+                "series": [
+                    {
+                        "name": "TV",
+                        "data": [0] * 8
+                        + [5, 10, 15, 20, 18, 12, 8, 5, 3, 2, 1, 0, 0, 0, 0, 0],
+                    },
+                ],
+            }
+            result = await tautulli.tautulli_plays_by_hour()
+            assert "peak" in result
+            assert "Total:" in result
 
 
 class TestEntryPoint:

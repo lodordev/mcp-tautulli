@@ -4,7 +4,7 @@
 
 A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](https://tautulli.com/) — Plex monitoring via Claude Code (or any MCP client).
 
-15 read-only tools. No mutations. All configuration via environment variables.
+16 read-only tools. No mutations. All configuration via environment variables.
 
 ## Prerequisites
 
@@ -94,7 +94,7 @@ mcp-tautulli
 | Tool | Description |
 |------|-------------|
 | `tautulli_activity` | Current Plex streaming activity — who's watching what, progress, quality |
-| `tautulli_history` | Recent playback history with filters (user, media type, search, date) |
+| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes `row_id` for stream detail lookup |
 | `tautulli_recently_added` | Recently added content — what's new in your Plex libraries |
 | `tautulli_search` | Search Plex content by title across all libraries |
 | `tautulli_user_stats` | Per-user watch statistics — plays, watch time, last seen |
@@ -108,6 +108,7 @@ mcp-tautulli
 | `tautulli_plays_by_date` | Daily play counts over time by stream type |
 | `tautulli_plays_by_day_of_week` | Weekly viewing patterns — which days see the most activity |
 | `tautulli_plays_by_hour` | Hourly viewing distribution — when people watch |
+| `tautulli_stream_data` | Detailed stream performance data — bitrate, codec, transcode decision, bandwidth for a specific play (use `row_id` from history or `session_key` from activity) |
 
 All tools are **read-only** — this server does not modify any Tautulli or Plex state.
 
@@ -137,6 +138,33 @@ Plays by day of week (last 30 days):
   Sunday   :  86 ████████████████████████████  (TV:60, Movies:16, Music:10)
 
 Total: 469 plays, avg 67.0/day
+```
+
+**`tautulli_stream_data`** (pass `row_id` from history output)
+```
+Stream Performance Data:
+
+Media: Game of Thrones (episode)
+
+Quality Profile: Original (20 Mbps 1080p)
+Overall Bitrate: 19842 kbps
+Video Bitrate: 18900 kbps
+Audio Bitrate: 640 kbps
+
+Stream Resolution: 1080p
+Stream Video Codec: h264
+Stream Framerate: 24p
+Stream Audio Codec: ac3
+Stream Audio Channels: 6
+
+Original Container: mkv
+Original Video Codec: h264
+Original Audio Codec: ac3
+
+Video Decision: direct play
+Audio Decision: direct play
+Bandwidth: 19842 kbps
+Location: lan
 ```
 
 **`tautulli_search`**

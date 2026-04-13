@@ -41,6 +41,10 @@ only-include = ["tautulli.py"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["."]
+addopts = "--cov=tautulli --cov-fail-under=96"
+
+[tool.coverage.report]
+fail_under = 96
 
 [dependency-groups]
 dev = [
