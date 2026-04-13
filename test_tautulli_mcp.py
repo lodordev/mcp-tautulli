@@ -75,6 +75,7 @@ class TestListTools:
             "tautulli_plays_by_date",
             "tautulli_plays_by_day_of_week",
             "tautulli_plays_by_hour",
+            "tautulli_stream_data",
         ]
 
         for tool in expected_tools:
@@ -289,6 +290,39 @@ class TestTautulliUserStats:
             result = await mcp_client.call_tool("tautulli_user_stats", arguments={})
 
             assert "No users found" in _get_text_content(result)
+
+
+class TestTautulliResources:
+    """Test MCP resources through the Client."""
+
+    async def test_list_resources(self, mcp_client: Client):
+        """Verify activity and server resources are listed."""
+        resources = await mcp_client.list_resources()
+        uris = [str(r.uri) for r in resources]
+        assert "tautulli://activity" in uris
+        assert "tautulli://server" in uris
+
+    async def test_read_activity_resource(self, mcp_client: Client):
+        """Read tautulli://activity resource returns formatted text."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {"stream_count": 0, "sessions": []}
+            result = await mcp_client.read_resource("tautulli://activity")
+            assert len(result) > 0
+            assert any("No active streams" in str(c) for c in result)
+
+    async def test_read_server_resource(self, mcp_client: Client):
+        """Read tautulli://server resource returns server info."""
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = {
+                "pms_name": "My Plex",
+                "pms_version": "1.2.3",
+                "pms_platform": "Linux",
+                "pms_ip": "10.0.0.1",
+                "pms_port": "32400",
+            }
+            result = await mcp_client.read_resource("tautulli://server")
+            assert len(result) > 0
+            assert any("My Plex" in str(c) for c in result)
 
 
 class TestTautulliLibraryStats:
