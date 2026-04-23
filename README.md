@@ -18,6 +18,12 @@ A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](http
 pip install mcp-tautulli
 ```
 
+Or install with uv:
+
+```bash
+uv tool install mcp-tautulli
+```
+
 Or from source:
 
 ```bash
@@ -32,7 +38,7 @@ Three environment variables:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TAUTULLI_URL` | Yes | — | Tautulli base URL (e.g. `http://localhost:8181`) |
+| `TAUTULLI_URL` | Yes | — | Tautulli base URL with protocol (e.g. `http://localhost:8181` or `https://tautulli.example.com:8181`) |
 | `TAUTULLI_API_KEY` | Yes | — | Tautulli API key (Settings → Web Interface → API Key) |
 | `TAUTULLI_TLS_VERIFY` | No | `true` | Set to `false` if using self-signed certs (e.g. Tailscale serve) |
 
@@ -40,13 +46,33 @@ Three environment variables:
 
 Add to your project's `.mcp.json`:
 
-```json
+**Using the installed tool (recommended):**
+
+```jsonc
+{
+  "mcpServers": {
+    "tautulli": {
+      "command": "mcp-tautulli",
+      "env": {
+        // Include the protocol (http:// or https://)
+        "TAUTULLI_URL": "http://your-tautulli-host:8181",
+        "TAUTULLI_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+**Or using the Python file directly (for development):**
+
+```jsonc
 {
   "mcpServers": {
     "tautulli": {
       "command": "python",
       "args": ["/path/to/tautulli.py"],
       "env": {
+        // Include the protocol (http:// or https://)
         "TAUTULLI_URL": "http://your-tautulli-host:8181",
         "TAUTULLI_API_KEY": "your-api-key-here"
       }
@@ -60,7 +86,7 @@ Or run standalone:
 ```bash
 export TAUTULLI_URL="http://localhost:8181"
 export TAUTULLI_API_KEY="your-api-key"
-python tautulli.py
+mcp-tautulli
 ```
 
 ## Tools

@@ -834,7 +834,9 @@ async def tautulli_plays_by_hour(days: int = 30) -> str:
 
 # ── Entry point ──────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Entry point for the mcp-tautulli command."""
     import sys
 
     missing = []
@@ -849,3 +851,7 @@ if __name__ == "__main__":
         )
         sys.exit(1)
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
