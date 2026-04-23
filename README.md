@@ -46,8 +46,6 @@ Three environment variables:
 
 Add to your project's `.mcp.json`:
 
-**Using the installed tool (recommended):**
-
 ```jsonc
 {
   "mcpServers": {
@@ -63,16 +61,16 @@ Add to your project's `.mcp.json`:
 }
 ```
 
-**Or using the Python file directly (for development):**
+## Claude Desktop Setup
 
-```jsonc
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
 {
   "mcpServers": {
     "tautulli": {
-      "command": "python",
-      "args": ["/path/to/tautulli.py"],
+      "command": "mcp-tautulli",
       "env": {
-        // Include the protocol (http:// or https://)
         "TAUTULLI_URL": "http://your-tautulli-host:8181",
         "TAUTULLI_API_KEY": "your-api-key-here"
       }
@@ -80,6 +78,27 @@ Add to your project's `.mcp.json`:
   }
 }
 ```
+
+## Local Development Config
+
+To point your MCP client at local source without reinstalling after every change, use `uv run --directory` instead of the installed binary:
+
+```json
+{
+  "mcpServers": {
+    "tautulli-dev": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-tautulli", "mcp-tautulli"],
+      "env": {
+        "TAUTULLI_URL": "http://your-tautulli-host:8181",
+        "TAUTULLI_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+This works in both Claude Code (`.mcp.json`) and Claude Desktop (`claude_desktop_config.json`). Restart the client after code changes — no `uv tool install` needed.
 
 Or run standalone:
 
@@ -94,7 +113,7 @@ mcp-tautulli
 | Tool | Description |
 |------|-------------|
 | `tautulli_activity` | Current Plex streaming activity — who's watching what, progress, quality |
-| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes `row_id` for stream detail lookup |
+| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes transcode decision and IP; pass `include_performance=true` to also fetch per-record bitrate via `get_stream_data` |
 | `tautulli_recently_added` | Recently added content — what's new in your Plex libraries |
 | `tautulli_search` | Search Plex content by title across all libraries |
 | `tautulli_user_stats` | Per-user watch statistics — plays, watch time, last seen |
