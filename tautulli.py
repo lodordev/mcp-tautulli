@@ -28,11 +28,13 @@ Environment variables:
 
 from __future__ import annotations
 
+import asyncio
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 import httpx
-from fastmcp import FastMCP
+from fastmcp import Context, FastMCP
 
 # ── Configuration ────────────────────────────────────────────────────────
 
@@ -67,13 +69,42 @@ def _sanitize_str(value: str) -> str:
 
 TIMEOUT = httpx.Timeout(15.0, connect=10.0)
 
-mcp = FastMCP("tautulli")
+_http_client: httpx.AsyncClient | None = None
+
+
+@asynccontextmanager
+async def _lifespan(server: FastMCP):
+    global _http_client
+    async with httpx.AsyncClient(timeout=TIMEOUT, verify=TLS_VERIFY) as client:
+        _http_client = client
+        yield
+    _http_client = None
+
+
+mcp = FastMCP("tautulli", lifespan=_lifespan)
 
 
 # ── API helper ───────────────────────────────────────────────────────────
 
 
-async def _api(cmd: str, **params) -> dict:
+async def _do_request(
+    client: httpx.AsyncClient, url: str, query: dict, cmd: str
+) -> dict:
+    try:
+        resp = await client.get(url, params=query)
+        resp.raise_for_status()
+        body = resp.json()
+    except httpx.HTTPStatusError:
+        raise RuntimeError(f"Tautulli returned HTTP {resp.status_code} for {cmd}")
+    except httpx.HTTPError:
+        raise RuntimeError(f"Tautulli unreachable for {cmd}")
+    response = body.get("response", {})
+    if response.get("result") != "success":
+        raise RuntimeError(f"Tautulli API error for {cmd}")
+    return response.get("data", {})
+
+
+async def _api(cmd: str, ctx: Context | None = None, **params) -> dict:
     """Call a Tautulli API command and return the response data.
 
     Raises RuntimeError on failure so FastMCP returns a proper error to the client.
@@ -82,21 +113,12 @@ async def _api(cmd: str, **params) -> dict:
         raise RuntimeError("TAUTULLI_URL environment variable not set")
     url = f"{TAUTULLI_URL.rstrip('/')}/api/v2"
     query = {"apikey": TAUTULLI_API_KEY, "cmd": cmd, **params}
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, verify=TLS_VERIFY) as client:
-            resp = await client.get(url, params=query)
-            resp.raise_for_status()
-            body = resp.json()
-    except httpx.HTTPStatusError:
-        raise RuntimeError(f"Tautulli returned HTTP {resp.status_code} for {cmd}")
-    except httpx.HTTPError:
-        raise RuntimeError(f"Tautulli unreachable for {cmd}")
-
-    response = body.get("response", {})
-    if response.get("result") != "success":
-        raise RuntimeError(f"Tautulli API error for {cmd}")
-
-    return response.get("data", {})
+    if ctx is not None:
+        await ctx.debug(f"tautulli → {cmd}")
+    if _http_client is not None:
+        return await _do_request(_http_client, url, query, cmd)
+    async with httpx.AsyncClient(timeout=TIMEOUT, verify=TLS_VERIFY) as client:
+        return await _do_request(client, url, query, cmd)
 
 
 # ── Formatting helpers ───────────────────────────────────────────────────
@@ -162,12 +184,12 @@ def _fmt_session(s: dict) -> str:
 
 
 @mcp.tool()
-async def tautulli_activity() -> str:
+async def tautulli_activity(ctx: Context | None = None) -> str:
     """Get current Plex streaming activity — who's watching what, playback state, progress, and quality.
 
     Use this before restarting Plex or rebooting servers to check for active streams.
     """
-    data = await _api("get_activity")
+    data = await _api("get_activity", ctx=ctx)
     stream_count = int(data.get("stream_count", 0))
     sessions = data.get("sessions", [])
 
@@ -197,6 +219,8 @@ async def tautulli_history(
     media_type: str = "",
     search: str = "",
     start_date: str = "",
+    include_performance: bool = False,
+    ctx: Context | None = None,
 ) -> str:
     """Get recent Plex playback history.
 
@@ -206,6 +230,8 @@ async def tautulli_history(
         media_type: Filter by type: "movie", "episode", "track" (audiobook).
         search: Text search in titles.
         start_date: Only show history from this date (YYYY-MM-DD).
+        include_performance: Also fetch stream bitrate per record via get_stream_data
+            (makes one extra API call per record — use with small lengths).
     """
     length = min(max(1, length), 50)
     params: dict = {"length": str(length)}
@@ -220,12 +246,25 @@ async def tautulli_history(
     if start_date:
         params["start_date"] = _sanitize_str(start_date)
 
-    data = await _api("get_history", **params)
+    data = await _api("get_history", ctx=ctx, **params)
     records = data.get("data", [])
     total = data.get("recordsTotal", 0)
 
     if not records:
         return "No playback history found matching filters."
+
+    # Optionally fetch stream performance data in parallel (one call per row_id)
+    stream_perf: dict[int, dict] = {}
+    if include_performance:
+        row_ids = [r["row_id"] for r in records if r.get("row_id")]
+        if row_ids:
+            results = await asyncio.gather(
+                *[_api("get_stream_data", ctx=ctx, row_id=rid) for rid in row_ids],
+                return_exceptions=True,
+            )
+            for rid, res in zip(row_ids, results):
+                if isinstance(res, dict) and res:
+                    stream_perf[rid] = res
 
     lines = [f"Playback history ({len(records)} of {total} records):\n"]
     for r in records:
@@ -233,6 +272,7 @@ async def tautulli_history(
         media = r.get("media_type", "")
         duration = _fmt_duration(r.get("duration", 0))
         player = r.get("player", "")
+        row_id = r.get("row_id")
 
         if media == "episode":
             show = r.get("grandparent_title", "")
@@ -251,9 +291,26 @@ async def tautulli_history(
             title = r.get("full_title") or r.get("title", "Unknown")
 
         state = r.get("state", "")
+        transcode = r.get("transcode_decision", "")
+        ip = r.get("ip_address", "")
+
         state_str = f" [{state}]" if state and state != "stopped" else ""
         player_str = f" on {player}" if player else ""
-        lines.append(f'  • {user_name}: "{title}" ({duration}{player_str}){state_str}')
+        transcode_str = f", {transcode}" if transcode else ""
+        ip_str = f", {ip}" if ip else ""
+        row_str = f" [row_id: {row_id}]" if row_id else ""
+
+        bitrate_str = ""
+        if include_performance and row_id and row_id in stream_perf:
+            bps = stream_perf[row_id].get("stream_bitrate") or stream_perf[row_id].get(
+                "bitrate"
+            )
+            if bps:
+                bitrate_str = f", {int(float(bps))} kbps"
+
+        lines.append(
+            f'  • {user_name}: "{title}" ({duration}{player_str}{transcode_str}{ip_str}{bitrate_str}){state_str}{row_str}'
+        )
 
     total_dur = data.get("total_duration", "")
     if total_dur:
@@ -263,7 +320,144 @@ async def tautulli_history(
 
 
 @mcp.tool()
-async def tautulli_recently_added(count: int = 10, media_type: str = "") -> str:
+async def tautulli_stream_data(
+    row_id: int | None = None,
+    session_key: int | None = None,
+    ctx: Context | None = None,
+) -> str:
+    """Get detailed stream performance data for diagnosing Plex playback issues.
+
+    Use row_id from history or session_key from current activity to fetch detailed
+    performance metrics including bitrate, bandwidth, codec information, and connection details.
+
+    Args:
+        row_id: The history row ID (from tautulli_history output).
+        session_key: The current session key (from tautulli_activity).
+        Either row_id or session_key must be provided.
+    """
+    if not row_id and not session_key:
+        return "Error: Either row_id or session_key must be provided."
+
+    params: dict = {}
+    if row_id:
+        params["row_id"] = row_id
+    if session_key:
+        params["session_key"] = session_key
+
+    data = await _api("get_stream_data", ctx=ctx, **params)
+
+    if not data:
+        return "No stream data found."
+
+    lines = ["Stream Performance Data:\n"]
+
+    # Basic info
+    media_type = data.get("media_type", "Unknown")
+    if media_type == "episode":
+        show = data.get("grandparent_title", "")
+        ep = data.get("title", "Unknown")
+        title = f"{show} — {ep}" if show else ep
+    else:
+        title = data.get("title") or data.get("grandparent_title", "Unknown")
+    lines.append(f"Media: {title} ({media_type})\n")
+
+    # Quality profile
+    quality_profile = data.get("quality_profile")
+    if quality_profile:
+        lines.append(f"Quality Profile: {quality_profile}")
+
+    # Source bitrates (original file)
+    bitrate = data.get("bitrate")
+    if bitrate:
+        lines.append(f"Source Bitrate: {bitrate} kbps")
+
+    video_bitrate = data.get("video_bitrate")
+    if video_bitrate:
+        lines.append(f"Source Video Bitrate: {video_bitrate} kbps")
+
+    audio_bitrate = data.get("audio_bitrate")
+    if audio_bitrate:
+        lines.append(f"Source Audio Bitrate: {audio_bitrate} kbps")
+
+    lines.append("")
+
+    # Stream (delivered) info
+    stream_bitrate = data.get("stream_bitrate")
+    if stream_bitrate:
+        lines.append(f"Stream Bitrate: {stream_bitrate} kbps")
+
+    stream_video_resolution = data.get("stream_video_resolution")
+    if stream_video_resolution:
+        lines.append(f"Stream Resolution: {stream_video_resolution}")
+
+    stream_video_codec = data.get("stream_video_codec")
+    if stream_video_codec:
+        lines.append(f"Stream Video Codec: {stream_video_codec}")
+
+    stream_video_framerate = data.get("stream_video_framerate")
+    if stream_video_framerate:
+        lines.append(f"Stream Framerate: {stream_video_framerate}")
+
+    stream_video_bitrate = data.get("stream_video_bitrate")
+    if stream_video_bitrate:
+        lines.append(f"Stream Video Bitrate: {stream_video_bitrate} kbps")
+
+    stream_audio_codec = data.get("stream_audio_codec")
+    if stream_audio_codec:
+        lines.append(f"Stream Audio Codec: {stream_audio_codec}")
+
+    stream_audio_channels = data.get("stream_audio_channels")
+    if stream_audio_channels:
+        lines.append(f"Stream Audio Channels: {stream_audio_channels}")
+
+    stream_audio_bitrate = data.get("stream_audio_bitrate")
+    if stream_audio_bitrate:
+        lines.append(f"Stream Audio Bitrate: {stream_audio_bitrate} kbps")
+
+    lines.append("")
+
+    # Original file info
+    container = data.get("container")
+    if container:
+        lines.append(f"Source Container: {container}")
+
+    video_codec = data.get("video_codec")
+    if video_codec:
+        lines.append(f"Source Video Codec: {video_codec}")
+
+    audio_codec = data.get("audio_codec")
+    if audio_codec:
+        lines.append(f"Source Audio Codec: {audio_codec}")
+
+    video_resolution = data.get("video_resolution")
+    if video_resolution:
+        lines.append(f"Source Resolution: {video_resolution}")
+
+    lines.append("")
+
+    # Transcode decisions (what actually happened to the stream)
+    stream_video_decision = data.get("stream_video_decision")
+    if stream_video_decision:
+        lines.append(f"Video Decision: {stream_video_decision}")
+
+    stream_audio_decision = data.get("stream_audio_decision")
+    if stream_audio_decision:
+        lines.append(f"Audio Decision: {stream_audio_decision}")
+
+    transcode_hw_decoding = data.get("transcode_hw_decoding")
+    transcode_hw_encoding = data.get("transcode_hw_encoding")
+    if transcode_hw_decoding or transcode_hw_encoding:
+        lines.append(
+            f"HW Transcode: decode={transcode_hw_decoding or 'no'}, encode={transcode_hw_encoding or 'no'}"
+        )
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+async def tautulli_recently_added(
+    count: int = 10, media_type: str = "", ctx: Context | None = None
+) -> str:
     """Get recently added content to Plex — shows what's new in your libraries.
 
     Args:
@@ -278,7 +472,7 @@ async def tautulli_recently_added(count: int = 10, media_type: str = "") -> str:
             return f"Invalid media_type: must be one of {', '.join(sorted(_VALID_RECENTLY_ADDED_TYPES))}"
         params["media_type"] = media_type
 
-    data = await _api("get_recently_added", **params)
+    data = await _api("get_recently_added", ctx=ctx, **params)
     items = data.get("recently_added", [])
 
     if not items:
@@ -310,7 +504,9 @@ async def tautulli_recently_added(count: int = 10, media_type: str = "") -> str:
 
 
 @mcp.tool()
-async def tautulli_search(query: str, limit: int = 10) -> str:
+async def tautulli_search(
+    query: str, limit: int = 10, ctx: Context | None = None
+) -> str:
     """Search Plex content by title — find movies, shows, episodes, and tracks.
 
     Args:
@@ -322,7 +518,7 @@ async def tautulli_search(query: str, limit: int = 10) -> str:
         return "Search query cannot be empty."
     limit = min(max(1, limit), 25)
 
-    data = await _api("search", query=query, limit=str(limit))
+    data = await _api("search", ctx=ctx, query=query, limit=str(limit))
     results_list = data.get("results_list", {})
 
     if not results_list:
@@ -374,7 +570,9 @@ async def tautulli_search(query: str, limit: int = 10) -> str:
 
 
 @mcp.tool()
-async def tautulli_user_stats(user: str = "", days: int = 30) -> str:
+async def tautulli_user_stats(
+    user: str = "", days: int = 30, ctx: Context | None = None
+) -> str:
     """Get per-user watch statistics — total plays, watch time, last seen.
 
     Args:
@@ -386,7 +584,7 @@ async def tautulli_user_stats(user: str = "", days: int = 30) -> str:
     if user:
         params["search"] = _sanitize_str(user)
 
-    data = await _api("get_users_table", **params)
+    data = await _api("get_users_table", ctx=ctx, **params)
     users = data.get("data", [])
 
     if not users:
@@ -412,9 +610,9 @@ async def tautulli_user_stats(user: str = "", days: int = 30) -> str:
 
 
 @mcp.tool()
-async def tautulli_library_stats() -> str:
+async def tautulli_library_stats(ctx: Context | None = None) -> str:
     """Get library-level statistics — item counts, total plays, and last played content per library."""
-    data = await _api("get_libraries_table")
+    data = await _api("get_libraries_table", ctx=ctx)
     libraries = data.get("data", [])
 
     if not libraries:
@@ -453,6 +651,7 @@ async def tautulli_most_watched(
     days: int = 7,
     stat_type: str = "plays",
     category: str = "tv",
+    ctx: Context | None = None,
 ) -> str:
     """Get most watched content over a time period.
 
@@ -480,7 +679,11 @@ async def tautulli_most_watched(
     stats_type = "total_plays" if stat_type == "plays" else "total_duration"
 
     data = await _api(
-        "get_home_stats", time_range=str(days), stat_id=stat_id, stats_type=stats_type
+        "get_home_stats",
+        ctx=ctx,
+        time_range=str(days),
+        stat_id=stat_id,
+        stats_type=stats_type,
     )
     rows = data.get("rows", [])
     title = data.get("stat_title", f"Top {category}")
@@ -502,9 +705,9 @@ async def tautulli_most_watched(
 
 
 @mcp.tool()
-async def tautulli_server_info() -> str:
+async def tautulli_server_info(ctx: Context | None = None) -> str:
     """Get Plex server identity — name, version, platform, and connection details."""
-    data = await _api("get_server_info")
+    data = await _api("get_server_info", ctx=ctx)
 
     name = data.get("pms_name", "Unknown")
     version = data.get("pms_version", "?")
@@ -524,7 +727,7 @@ async def tautulli_server_info() -> str:
 
 
 @mcp.tool()
-async def tautulli_status() -> str:
+async def tautulli_status(ctx: Context | None = None) -> str:
     """Check Tautulli server configuration and reachability."""
     lines = [
         f"Tautulli URL: {TAUTULLI_URL}",
@@ -537,7 +740,7 @@ async def tautulli_status() -> str:
         return "\n".join(lines)
 
     try:
-        data = await _api("get_server_info")
+        data = await _api("get_server_info", ctx=ctx)
         name = data.get("pms_name", "Unknown")
         version = data.get("pms_version", "?")
         lines.append(f'\nReachable: yes — Plex server "{name}" v{version}')
@@ -574,14 +777,16 @@ def _chart_totals(data: dict) -> list[dict]:
 
 
 @mcp.tool()
-async def tautulli_transcode_stats(days: int = 30) -> str:
+async def tautulli_transcode_stats(days: int = 30, ctx: Context | None = None) -> str:
     """Get direct play vs transcode breakdown by platform — shows which devices cause the most transcoding load.
 
     Args:
         days: Time range in days (default 30).
     """
     days = _clamp_days(days)
-    data = await _api("get_stream_type_by_top_10_platforms", time_range=str(days))
+    data = await _api(
+        "get_stream_type_by_top_10_platforms", ctx=ctx, time_range=str(days)
+    )
     rows = _chart_totals(data)
 
     if not rows:
@@ -626,14 +831,16 @@ async def tautulli_transcode_stats(days: int = 30) -> str:
 
 
 @mcp.tool()
-async def tautulli_platform_stats(days: int = 30) -> str:
+async def tautulli_platform_stats(days: int = 30, ctx: Context | None = None) -> str:
     """Get top platforms/devices by plays and total watch time.
 
     Args:
         days: Time range in days (default 30).
     """
     days = _clamp_days(days)
-    data = await _api("get_home_stats", time_range=str(days), stat_id="top_platforms")
+    data = await _api(
+        "get_home_stats", ctx=ctx, time_range=str(days), stat_id="top_platforms"
+    )
     rows = data.get("rows", [])
 
     if not rows:
@@ -656,15 +863,15 @@ async def tautulli_platform_stats(days: int = 30) -> str:
 
 
 @mcp.tool()
-async def tautulli_stream_resolution(days: int = 30) -> str:
+async def tautulli_stream_resolution(days: int = 30, ctx: Context | None = None) -> str:
     """Get source vs delivered resolution analysis — shows what quality your library serves and what clients actually receive.
 
     Args:
         days: Time range in days (default 30).
     """
     days = _clamp_days(days)
-    source = await _api("get_plays_by_source_resolution", time_range=str(days))
-    stream = await _api("get_plays_by_stream_resolution", time_range=str(days))
+    source = await _api("get_plays_by_source_resolution", ctx=ctx, time_range=str(days))
+    stream = await _api("get_plays_by_stream_resolution", ctx=ctx, time_range=str(days))
 
     source_rows = _chart_totals(source)
     stream_rows = _chart_totals(stream)
@@ -707,14 +914,14 @@ async def tautulli_stream_resolution(days: int = 30) -> str:
 
 
 @mcp.tool()
-async def tautulli_plays_by_date(days: int = 14) -> str:
+async def tautulli_plays_by_date(days: int = 14, ctx: Context | None = None) -> str:
     """Get daily play counts over time, broken down by stream type (direct play, direct stream, transcode).
 
     Args:
         days: Number of days to show (default 14, max 90).
     """
     days = _clamp_days(days, default=14, maximum=90)
-    data = await _api("get_plays_by_stream_type", time_range=str(days))
+    data = await _api("get_plays_by_stream_type", ctx=ctx, time_range=str(days))
     rows = _chart_totals(data)
 
     if not rows:
@@ -759,14 +966,16 @@ _DAY_NAMES = [
 
 
 @mcp.tool()
-async def tautulli_plays_by_day_of_week(days: int = 30) -> str:
+async def tautulli_plays_by_day_of_week(
+    days: int = 30, ctx: Context | None = None
+) -> str:
     """Get weekly viewing patterns — which days of the week see the most Plex activity.
 
     Args:
         days: Time range in days (default 30).
     """
     days = _clamp_days(days)
-    data = await _api("get_plays_by_dayofweek", time_range=str(days))
+    data = await _api("get_plays_by_dayofweek", ctx=ctx, time_range=str(days))
     rows = _chart_totals(data)
 
     if not rows:
@@ -797,14 +1006,14 @@ async def tautulli_plays_by_day_of_week(days: int = 30) -> str:
 
 
 @mcp.tool()
-async def tautulli_plays_by_hour(days: int = 30) -> str:
+async def tautulli_plays_by_hour(days: int = 30, ctx: Context | None = None) -> str:
     """Get hourly viewing distribution — when people watch Plex throughout the day.
 
     Args:
         days: Time range in days (default 30).
     """
     days = _clamp_days(days)
-    data = await _api("get_plays_by_hourofday", time_range=str(days))
+    data = await _api("get_plays_by_hourofday", ctx=ctx, time_range=str(days))
     rows = _chart_totals(data)
 
     if not rows:
@@ -832,9 +1041,26 @@ async def tautulli_plays_by_hour(days: int = 30) -> str:
     return "\n".join(lines)
 
 
+# ── Resources ────────────────────────────────────────────────────────────
+
+
+@mcp.resource("tautulli://activity")
+async def _resource_activity() -> str:
+    """Current Plex streaming activity — who's watching what right now."""
+    return await tautulli_activity()
+
+
+@mcp.resource("tautulli://server")
+async def _resource_server() -> str:
+    """Plex server identity and status."""
+    return await tautulli_server_info()
+
+
 # ── Entry point ──────────────────────────────────────────────────────────
 
-if __name__ == "__main__":
+
+def main() -> None:
+    """Entry point for the mcp-tautulli command."""
     import sys
 
     missing = []
@@ -849,3 +1075,7 @@ if __name__ == "__main__":
         )
         sys.exit(1)
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

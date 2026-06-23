@@ -1,0 +1,21 @@
+# prek configuration - see https://prek.j178.dev/configuration/
+
+default_language_version . python = "3.12"
+
+[[repos]]
+repo = "https://github.com/astral-sh/ruff-pre-commit"
+rev = "v0.15.10"
+hooks = [
+  { id = "ruff-check", args = ["--fix"] },
+  { id = "ruff-format" },
+]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "ty-check"
+name = "ty type check"
+language = "system"
+entry = "uv run ty check"
+types = ["python"]

@@ -4,7 +4,7 @@
 
 A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](https://tautulli.com/) — Plex monitoring via Claude Code (or any MCP client).
 
-15 read-only tools. No mutations. All configuration via environment variables.
+16 read-only tools. No mutations. All configuration via environment variables.
 
 ## Prerequisites
 
@@ -16,6 +16,12 @@ A single-file [MCP](https://modelcontextprotocol.io/) server for [Tautulli](http
 
 ```bash
 pip install mcp-tautulli
+```
+
+Or install with uv:
+
+```bash
+uv tool install mcp-tautulli
 ```
 
 Or from source:
@@ -32,7 +38,7 @@ Three environment variables:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `TAUTULLI_URL` | Yes | — | Tautulli base URL (e.g. `http://localhost:8181`) |
+| `TAUTULLI_URL` | Yes | — | Tautulli base URL with protocol (e.g. `http://localhost:8181` or `https://tautulli.example.com:8181`) |
 | `TAUTULLI_API_KEY` | Yes | — | Tautulli API key (Settings → Web Interface → API Key) |
 | `TAUTULLI_TLS_VERIFY` | No | `true` | Set to `false` if using self-signed certs (e.g. Tailscale serve) |
 
@@ -40,12 +46,30 @@ Three environment variables:
 
 Add to your project's `.mcp.json`:
 
+```jsonc
+{
+  "mcpServers": {
+    "tautulli": {
+      "command": "mcp-tautulli",
+      "env": {
+        // Include the protocol (http:// or https://)
+        "TAUTULLI_URL": "http://your-tautulli-host:8181",
+        "TAUTULLI_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+## Claude Desktop Setup
+
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
 ```json
 {
   "mcpServers": {
     "tautulli": {
-      "command": "python",
-      "args": ["/path/to/tautulli.py"],
+      "command": "mcp-tautulli",
       "env": {
         "TAUTULLI_URL": "http://your-tautulli-host:8181",
         "TAUTULLI_API_KEY": "your-api-key-here"
@@ -55,12 +79,33 @@ Add to your project's `.mcp.json`:
 }
 ```
 
+## Local Development Config
+
+To point your MCP client at local source without reinstalling after every change, use `uv run --directory` instead of the installed binary:
+
+```json
+{
+  "mcpServers": {
+    "tautulli-dev": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/mcp-tautulli", "mcp-tautulli"],
+      "env": {
+        "TAUTULLI_URL": "http://your-tautulli-host:8181",
+        "TAUTULLI_API_KEY": "your-api-key-here"
+      }
+    }
+  }
+}
+```
+
+This works in both Claude Code (`.mcp.json`) and Claude Desktop (`claude_desktop_config.json`). Restart the client after code changes — no `uv tool install` needed.
+
 Or run standalone:
 
 ```bash
 export TAUTULLI_URL="http://localhost:8181"
 export TAUTULLI_API_KEY="your-api-key"
-python tautulli.py
+mcp-tautulli
 ```
 
 ## Tools
@@ -68,7 +113,7 @@ python tautulli.py
 | Tool | Description |
 |------|-------------|
 | `tautulli_activity` | Current Plex streaming activity — who's watching what, progress, quality |
-| `tautulli_history` | Recent playback history with filters (user, media type, search, date) |
+| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes transcode decision and IP; pass `include_performance=true` to also fetch per-record bitrate via `get_stream_data` |
 | `tautulli_recently_added` | Recently added content — what's new in your Plex libraries |
 | `tautulli_search` | Search Plex content by title across all libraries |
 | `tautulli_user_stats` | Per-user watch statistics — plays, watch time, last seen |
@@ -82,6 +127,7 @@ python tautulli.py
 | `tautulli_plays_by_date` | Daily play counts over time by stream type |
 | `tautulli_plays_by_day_of_week` | Weekly viewing patterns — which days see the most activity |
 | `tautulli_plays_by_hour` | Hourly viewing distribution — when people watch |
+| `tautulli_stream_data` | Detailed stream performance data — bitrate, codec, transcode decision, bandwidth for a specific play (use `row_id` from history or `session_key` from activity) |
 
 All tools are **read-only** — this server does not modify any Tautulli or Plex state.
 
@@ -111,6 +157,33 @@ Plays by day of week (last 30 days):
   Sunday   :  86 ████████████████████████████  (TV:60, Movies:16, Music:10)
 
 Total: 469 plays, avg 67.0/day
+```
+
+**`tautulli_stream_data`** (pass `row_id` from history output)
+```
+Stream Performance Data:
+
+Media: Game of Thrones (episode)
+
+Quality Profile: Original (20 Mbps 1080p)
+Overall Bitrate: 19842 kbps
+Video Bitrate: 18900 kbps
+Audio Bitrate: 640 kbps
+
+Stream Resolution: 1080p
+Stream Video Codec: h264
+Stream Framerate: 24p
+Stream Audio Codec: ac3
+Stream Audio Channels: 6
+
+Original Container: mkv
+Original Video Codec: h264
+Original Audio Codec: ac3
+
+Video Decision: direct play
+Audio Decision: direct play
+Bandwidth: 19842 kbps
+Location: lan
 ```
 
 **`tautulli_search`**
