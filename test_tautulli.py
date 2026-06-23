@@ -454,23 +454,28 @@ class TestTautulliHistory:
             result = await tautulli.tautulli_history()
             assert "transcode" in result
 
-    async def test_history_shows_ip_address(self):
-        """Test that ip_address appears in history output."""
+    async def test_history_ip_address_gated(self):
+        """ip_address is hidden by default (PII) and shown only with include_ip=True."""
+        payload = {
+            "data": [
+                {
+                    "friendly_name": "Alice",
+                    "media_type": "movie",
+                    "title": "Dune",
+                    "duration": 9000,
+                    "ip_address": "192.168.1.42",
+                }
+            ],
+            "recordsTotal": 1,
+        }
         with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
-            mock_api.return_value = {
-                "data": [
-                    {
-                        "friendly_name": "Alice",
-                        "media_type": "movie",
-                        "title": "Dune",
-                        "duration": 9000,
-                        "ip_address": "192.168.1.42",
-                    }
-                ],
-                "recordsTotal": 1,
-            }
-            result = await tautulli.tautulli_history()
-            assert "192.168.1.42" in result
+            mock_api.return_value = payload
+            default_result = await tautulli.tautulli_history()
+            assert "192.168.1.42" not in default_result
+        with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
+            mock_api.return_value = payload
+            opted_in_result = await tautulli.tautulli_history(include_ip=True)
+            assert "192.168.1.42" in opted_in_result
 
     async def test_history_total_duration(self):
         """Test that total_duration appears in history output when present."""
@@ -491,7 +496,7 @@ class TestTautulliHistory:
             assert "5 hrs 30 mins" in result
 
     async def test_history_all_stream_fields(self):
-        """Test that transcode_decision and ip_address appear together."""
+        """transcode_decision and row_id always show; ip_address only with include_ip."""
         with patch.object(tautulli, "_api", new_callable=AsyncMock) as mock_api:
             mock_api.return_value = {
                 "data": [
@@ -509,7 +514,7 @@ class TestTautulliHistory:
                 ],
                 "recordsTotal": 1,
             }
-            result = await tautulli.tautulli_history()
+            result = await tautulli.tautulli_history(include_ip=True)
             assert "direct play" in result
             assert "10.0.0.5" in result
             assert "row_id: 77" in result

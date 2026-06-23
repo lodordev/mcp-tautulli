@@ -220,6 +220,7 @@ async def tautulli_history(
     search: str = "",
     start_date: str = "",
     include_performance: bool = False,
+    include_ip: bool = False,
     ctx: Context | None = None,
 ) -> str:
     """Get recent Plex playback history.
@@ -232,6 +233,8 @@ async def tautulli_history(
         start_date: Only show history from this date (YYYY-MM-DD).
         include_performance: Also fetch stream bitrate per record via get_stream_data
             (makes one extra API call per record — use with small lengths).
+        include_ip: Also show the client IP address per record. Off by default —
+            IP addresses are personally identifying, so opt in when you need them.
     """
     length = min(max(1, length), 50)
     params: dict = {"length": str(length)}
@@ -297,7 +300,7 @@ async def tautulli_history(
         state_str = f" [{state}]" if state and state != "stopped" else ""
         player_str = f" on {player}" if player else ""
         transcode_str = f", {transcode}" if transcode else ""
-        ip_str = f", {ip}" if ip else ""
+        ip_str = f", {ip}" if include_ip and ip else ""
         row_str = f" [row_id: {row_id}]" if row_id else ""
 
         bitrate_str = ""

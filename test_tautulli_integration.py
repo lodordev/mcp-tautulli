@@ -109,6 +109,7 @@ class TestIntegrationTools:
             pytest.skip("No history records available on this server")
 
         formatted = await tautulli.tautulli_history(length=10)
+        formatted_with_ip = await tautulli.tautulli_history(length=10, include_ip=True)
 
         for r in records:
             transcode = r.get("transcode_decision", "")
@@ -118,4 +119,9 @@ class TestIntegrationTools:
                     f"Expected transcode_decision '{transcode}' in output"
                 )
             if ip:
-                assert ip in formatted, f"Expected ip_address '{ip}' in output"
+                assert ip not in formatted, (
+                    f"ip_address '{ip}' leaked into default output (should be gated)"
+                )
+                assert ip in formatted_with_ip, (
+                    f"Expected ip_address '{ip}' with include_ip=True"
+                )

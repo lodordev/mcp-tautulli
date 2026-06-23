@@ -113,7 +113,7 @@ mcp-tautulli
 | Tool | Description |
 |------|-------------|
 | `tautulli_activity` | Current Plex streaming activity — who's watching what, progress, quality |
-| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes transcode decision and IP; pass `include_performance=true` to also fetch per-record bitrate via `get_stream_data` |
+| `tautulli_history` | Recent playback history with filters (user, media type, search, date) — includes transcode decision; pass `include_ip=true` to show client IP (off by default, it's PII) and `include_performance=true` to also fetch per-record bitrate via `get_stream_data` |
 | `tautulli_recently_added` | Recently added content — what's new in your Plex libraries |
 | `tautulli_search` | Search Plex content by title across all libraries |
 | `tautulli_user_stats` | Per-user watch statistics — plays, watch time, last seen |
